@@ -7,16 +7,21 @@ import os
 from datetime import datetime
 
 # ================= TELEGRAM CONFIG (FROM GITHUB SECRETS) =================
-BOT_TOKEN = os.getenv("8214091785:AAFzhQLjV8A6CjuIjoAIXCheE696dz3bYJo")
-CHAT_ID = os.getenv("1944866756")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 def send_telegram(message):
+    print("DEBUG BOT_TOKEN:", "SET" if BOT_TOKEN else "MISSING")
+    print("DEBUG CHAT_ID:", "SET" if CHAT_ID else "MISSING")
+
     if not BOT_TOKEN or not CHAT_ID:
         print("Telegram secrets missing")
         return
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=payload)
+    r = requests.post(url, data=payload)
+    print("Telegram response:", r.text)
 
 send_telegram("✅ Bot test: GitHub Actions → Telegram connection OK")
 
@@ -159,5 +164,6 @@ if medium_conviction:
     for _, e in medium_conviction[:30]:
         msg += e + "\n\n"
     send_telegram(msg)
+
 
 
