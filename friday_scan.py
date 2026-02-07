@@ -18,6 +18,8 @@ def send_telegram(message):
     payload = {"chat_id": CHAT_ID, "text": message}
     requests.post(url, data=payload)
 
+send_telegram("✅ Bot test: GitHub Actions → Telegram connection OK")
+
 # ================= LOAD STOCK UNIVERSE =================
 with open("stocks.txt", "r") as f:
     stocks = [line.strip() + ".NS" for line in f if line.strip()]
@@ -157,3 +159,4 @@ if medium_conviction:
     for _, e in medium_conviction[:30]:
         msg += e + "\n\n"
     send_telegram(msg)
+
