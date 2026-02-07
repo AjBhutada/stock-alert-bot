@@ -1,0 +1,26 @@
+name: Daily Stock Scan
+
+on:
+  schedule:
+    - cron: '30 11 * * *'   # 5:00 PM IST
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run scanner
+        run: |
+          python friday_scan.py
