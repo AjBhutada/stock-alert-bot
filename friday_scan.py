@@ -3,13 +3,17 @@ import pandas as pd
 import ta
 import requests
 import time
+import os
 from datetime import datetime
 
-# ================= TELEGRAM CONFIG =================
-BOT_TOKEN = "8214091785:AAFzhQLjV8A6CjuIjoAIXCheE696dz3bYJo"
-CHAT_ID = "1944866756"
+# ================= TELEGRAM CONFIG (FROM GITHUB SECRETS) =================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 def send_telegram(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Telegram secrets missing")
+        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message}
     requests.post(url, data=payload)
@@ -29,7 +33,7 @@ try:
     results_df["Result_Date"] = pd.to_datetime(results_df["Result_Date"], errors="coerce")
     results_map = dict(zip(results_df["Symbol"], results_df["Result_Date"]))
 except Exception as e:
-    print("Error loading result calendar:", e)
+    print("Result calendar error:", e)
     results_map = {}
 
 high_conviction = []
@@ -42,51 +46,72 @@ for i, stock in enumerate(stocks, 1):
     try:
         df = yf.Ticker(stock).history(period="3mo")
 
-        if df.empty or len(df) < 50:
+        if df.empty or len(df) < 60:
             continue
 
         close = pd.Series(df["Close"].values, index=df.index)
         volume = pd.Series(df["Volume"].values, index=df.index)
+        high = pd.Series(df["High"].values, index=df.index)
+        low = pd.Series(df["Low"].values, index=df.index)
 
-        ema50 = close.ewm(span=50).mean()
+        # Indicators
         ema200 = close.ewm(span=200).mean()
         rsi = ta.momentum.RSIIndicator(close, 14).rsi()
         vol_avg = volume.rolling(20).mean()
+
+        # VWAP
+        vwap = (volume * (high + low + close) / 3).cumsum() / volume.cumsum()
+
+        # MACD
+        macd = ta.trend.MACD(close)
+        macd_diff = macd.macd_diff()
 
         last_close = close.iloc[-1]
         last_volume = volume.iloc[-1]
         rsi_val = rsi.iloc[-1]
 
-        ema50_dist = ((last_close - ema50.iloc[-1]) / ema50.iloc[-1]) * 100
         ema200_dist = ((last_close - ema200.iloc[-1]) / ema200.iloc[-1]) * 100
         vol_spike = ((last_volume - vol_avg.iloc[-1]) / vol_avg.iloc[-1]) * 100
+        vwap_dist = ((last_close - vwap.iloc[-1]) / vwap.iloc[-1]) * 100
 
         score = 0
-        reasons = []
+        signals = []
 
-        if abs(ema200_dist) < 1:
-            score += 40
-            reasons.append(f"EMA200 {ema200_dist:.2f}%")
-
-        if abs(ema50_dist) < 1:
-            score += 25
-            reasons.append(f"EMA50 {ema50_dist:.2f}%")
-
+        # 🔥 Volume (highest weight)
         if vol_spike > 50:
-            score += 30
-            reasons.append(f"VOL +{vol_spike:.0f}%")
+            score += 50
+            signals.append(f"VOL +{vol_spike:.0f}%")
 
+        # EMA 200 proximity
+        if abs(ema200_dist) < 1:
+            score += 30
+            signals.append(f"Near EMA200: {ema200_dist:.2f}%")
+
+        # RSI extremes
         if rsi_val > 70 or rsi_val < 30:
             score += 20
-            reasons.append(f"RSI {rsi_val:.1f}")
+            signals.append(f"RSI: {rsi_val:.1f}")
 
-        if score < 50:
+        # VWAP proximity
+        if abs(vwap_dist) < 1:
+            score += 20
+            signals.append(f"VWAP: {vwap_dist:.2f}%")
+
+        # MACD crossover
+        if macd_diff.iloc[-1] > 0 and macd_diff.iloc[-2] < 0:
+            score += 20
+            signals.append("MACD: Bullish Crossover")
+        elif macd_diff.iloc[-1] < 0 and macd_diff.iloc[-2] > 0:
+            score += 20
+            signals.append("MACD: Bearish Crossover")
+
+        if score < 60:
             continue
 
-        # -------- Bull / Bear --------
-        bias = "🟢 BULLISH" if last_close > ema50.iloc[-1] and rsi_val > 50 else "🔴 BEARISH"
+        # Direction
+        bias = "🟢📈 BULL" if last_close > ema200.iloc[-1] and rsi_val > 50 else "🔴📉 BEAR"
 
-        # -------- Result Date & Warning --------
+        # Result date logic
         symbol_clean = stock.replace(".NS", "")
         result_date = results_map.get(symbol_clean)
 
@@ -95,28 +120,25 @@ for i, stock in enumerate(stocks, 1):
 
         if pd.notna(result_date):
             result_text = result_date.strftime("%d-%b-%Y")
-            days_to_result = (result_date.date() - today).days
-
-            if 0 <= days_to_result <= 3:
+            days_left = (result_date.date() - today).days
+            if 0 <= days_left <= 3:
                 warning = " ⚠ Upcoming result in 3 days"
 
         entry = (
             f"{bias} | {symbol_clean}\n"
-            f"Score: {score}\n"
-            f"{', '.join(reasons)}\n"
-            f"RSI: {rsi_val:.1f}\n"
-            f"Result: {result_text}{warning}"
+            + "\n".join(signals)
+            + f"\nResult: {result_text}{warning}"
         )
 
-        if score >= 70:
+        if score >= 90:
             high_conviction.append((score, entry))
         else:
             medium_conviction.append((score, entry))
 
-    except:
-        pass
+    except Exception as e:
+        print(stock, "error:", e)
 
-    # -------- RATE LIMIT PROTECTION --------
+    # Rate limit safety
     if i % 25 == 0:
         time.sleep(2)
 
@@ -125,13 +147,13 @@ high_conviction.sort(reverse=True)
 medium_conviction.sort(reverse=True)
 
 if high_conviction:
-    msg = "🟢 HIGH CONVICTION SETUPS (FRIDAY EOD)\n\n"
+    msg = "🟢 HIGH CONVICTION SETUPS (EOD)\n\n"
     for _, e in high_conviction[:20]:
         msg += e + "\n\n"
     send_telegram(msg)
 
 if medium_conviction:
-    msg = "🟡 MEDIUM CONVICTION SETUPS (FRIDAY EOD)\n\n"
+    msg = "🟡 MEDIUM CONVICTION SETUPS (EOD)\n\n"
     for _, e in medium_conviction[:30]:
         msg += e + "\n\n"
     send_telegram(msg)
