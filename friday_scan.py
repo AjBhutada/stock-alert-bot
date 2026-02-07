@@ -7,8 +7,8 @@ import os
 from datetime import datetime
 
 # ================= TELEGRAM CONFIG (FROM GITHUB SECRETS) =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN = os.getenv("8214091785:AAFzhQLjV8A6CjuIjoAIXCheE696dz3bYJo")
+CHAT_ID = os.getenv("1944866756")
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
@@ -159,4 +159,5 @@ if medium_conviction:
     for _, e in medium_conviction[:30]:
         msg += e + "\n\n"
     send_telegram(msg)
+
 
