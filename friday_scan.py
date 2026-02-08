@@ -6,47 +6,25 @@ import time
 import os
 from datetime import datetime
 
-# ================= TELEGRAM CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-def send_telegram(message):
+def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=payload)
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-# ================= LOAD STOCK UNIVERSE =================
-with open("stocks.txt", "r") as f:
-    stocks = [line.strip() + ".NS" for line in f if line.strip()]
+with open("stocks.txt") as f:
+    stocks = [s.strip() + ".NS" for s in f if s.strip()]
 
-# ================= LOAD RESULT CALENDAR =================
-RESULTS_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRPYwOAHp2nWb917nR9F5QUX37yGhV7dN6q_-0falsOQx9u9BSoOKWzaHGQjPk9vQA664BiBhpC9q0H/pub?gid=0&single=true&output=csv"
+high_conv, mid_conv = [], []
+ema_bias_list = []
 
-results_map = {}
-try:
-    results_df = pd.read_csv(RESULTS_CSV_URL)
-    results_df["Security Name"] = results_df["Security Name"].str.upper().str.strip()
-    results_df["Result Date"] = pd.to_datetime(
-    results_df["Result Date"],
-    format="%d-%b-%y",
-    errors="coerce"
-)
-    results_map = dict(zip(results_df["Security Name"], results_df["Result Date"]))
-except:
-    pass
-
-high_conviction = []
-medium_conviction = []
-
-today = datetime.today().date()
-
-# ================= SCAN =================
 for i, stock in enumerate(stocks, 1):
     try:
-        ticker = yf.Ticker(stock)
-        df = ticker.history(period="3mo")
+        t = yf.Ticker(stock)
+        df = t.history(period="6mo")
 
         if df.empty or len(df) < 60:
             continue
@@ -56,68 +34,80 @@ for i, stock in enumerate(stocks, 1):
         high = df["High"]
         low = df["Low"]
 
+        ema50 = close.ewm(span=50).mean()
         ema200 = close.ewm(span=200).mean()
         rsi = ta.momentum.RSIIndicator(close, 14).rsi()
         vol_avg = volume.rolling(20).mean()
-        vwap = (volume * (high + low + close) / 3).cumsum() / volume.cumsum()
-        macd = ta.trend.MACD(close).macd_diff()
 
         last_close = close.iloc[-1]
-        rsi_val = rsi.iloc[-1]
+        last_vol = volume.iloc[-1]
+        vol_spike = ((last_vol - vol_avg.iloc[-1]) / vol_avg.iloc[-1]) * 100
 
-        ema200_dist = ((last_close - ema200.iloc[-1]) / ema200.iloc[-1]) * 100
-        vol_spike = ((volume.iloc[-1] - vol_avg.iloc[-1]) / vol_avg.iloc[-1]) * 100
-        vwap_dist = ((last_close - vwap.iloc[-1]) / vwap.iloc[-1]) * 100
+        # Candle intent
+        candle_range = high.iloc[-1] - low.iloc[-1]
+        body = abs(close.iloc[-1] - df["Open"].iloc[-1])
+        body_ratio = body / candle_range if candle_range > 0 else 0
+
+        buy_intent = body_ratio > 0.6 and close.iloc[-1] > (low.iloc[-1] + 0.7 * candle_range)
+        sell_intent = body_ratio > 0.6 and close.iloc[-1] < (low.iloc[-1] + 0.3 * candle_range)
+
+        # Support / Resistance
+        support = close.iloc[-20:].min()
+        resistance = close.iloc[-20:].max()
+        near_support = abs((last_close - support) / support) * 100 < 1
+        near_resistance = abs((last_close - resistance) / resistance) * 100 < 1
 
         score = 0
         signals = []
 
         if vol_spike > 50:
-            score += 50
-            signals.append(f"Volume Spike: +{vol_spike:.0f}%")
+            score += 40
+            signals.append(f"Volume +{vol_spike:.0f}%")
 
-        if abs(ema200_dist) < 1:
+        ema200_dist = abs((last_close - ema200.iloc[-1]) / ema200.iloc[-1]) * 100
+        if ema200_dist < 1:
             score += 30
             signals.append(f"Near EMA200 ({ema200_dist:.2f}%)")
 
-        if abs(vwap_dist) < 1:
+        if rsi.iloc[-1] > 70 or rsi.iloc[-1] < 30:
             score += 20
-            signals.append(f"Near VWAP ({vwap_dist:.2f}%)")
+            signals.append(f"RSI {rsi.iloc[-1]:.1f}")
 
-        if macd.iloc[-1] > 0 and macd.iloc[-2] < 0:
-            score += 20
-            signals.append("MACD Bullish Crossover")
-        elif macd.iloc[-1] < 0 and macd.iloc[-2] > 0:
-            score += 20
-            signals.append("MACD Bearish Crossover")
-
-        if score < 60:
-            continue
-
-        direction = "🟢📈" if last_close > ema200.iloc[-1] and rsi_val > 50 else "🔴📉"
+        direction = "🟢📈" if buy_intent else "🔴📉" if sell_intent else None
 
         symbol = stock.replace(".NS", "")
-        company_name = ""
-        try:
-            company_name = ticker.info.get("shortName", "")
-        except:
-            pass
+        name = t.info.get("shortName", "")
 
         header = f"{direction} {symbol}"
-        if company_name:
-            header += f" | {company_name}"
+        if name:
+            header += f" | {name}"
 
         entry = header + "\n" + "\n".join(signals)
 
-        if symbol in results_map:
-            rd = results_map[symbol]
-            if pd.notna(rd):
-                entry += f"\nResult Date: {rd.strftime('%d %B %Y')}"
+        if score >= 70:
+            high_conv.append((score, entry))
+        elif score >= 55:
+            mid_conv.append((score, entry))
 
-        if score >= 90:
-            high_conviction.append((score, entry))
-        else:
-            medium_conviction.append((score, entry))
+        # EMA APPROACH LIST (TOMORROW BIAS)
+        ema50_dist = abs((last_close - ema50.iloc[-1]) / ema50.iloc[-1]) * 100
+
+        if (ema50_dist < 1 or ema200_dist < 1) and vol_spike > 40:
+            bias = "🟢📈" if buy_intent else "🔴📉" if sell_intent else None
+            if bias:
+                txt = f"{bias} {symbol}"
+                if name:
+                    txt += f" | {name}"
+                if ema200_dist < 1:
+                    txt += f"\n• Near EMA200 ({ema200_dist:.2f}%)"
+                else:
+                    txt += f"\n• Near EMA50 ({ema50_dist:.2f}%)"
+                txt += "\n• Delivery-like Buying" if buy_intent else "\n• Delivery-like Selling"
+                if near_support:
+                    txt += "\n• Near Support"
+                if near_resistance:
+                    txt += "\n• Near Resistance"
+                ema_bias_list.append(txt)
 
     except:
         pass
@@ -125,22 +115,24 @@ for i, stock in enumerate(stocks, 1):
     if i % 25 == 0:
         time.sleep(2)
 
-# ================= SEND TELEGRAM =================
-high_conviction.sort(reverse=True)
-medium_conviction.sort(reverse=True)
+# SEND MESSAGES
+high_conv.sort(reverse=True)
+mid_conv.sort(reverse=True)
 
-if high_conviction:
+if high_conv:
     msg = "🟢 HIGH CONVICTION SETUPS (EOD)\n\n"
-    for _, e in high_conviction[:20]:
+    for _, e in high_conv[:20]:
         msg += e + "\n\n"
     send_telegram(msg)
 
-if medium_conviction:
+if mid_conv:
     msg = "🟡 MEDIUM CONVICTION SETUPS (EOD)\n\n"
-    for _, e in medium_conviction[:30]:
+    for _, e in mid_conv[:25]:
         msg += e + "\n\n"
     send_telegram(msg)
 
-if not high_conviction and not medium_conviction:
-    send_telegram("ℹ️ EOD Scan completed. No high-probability setups today.")
-
+if ema_bias_list:
+    msg = "🚀 EMA APPROACH – TOMORROW BIAS (EOD)\n\n"
+    for e in ema_bias_list[:15]:
+        msg += e + "\n\n"
+    send_telegram(msg)
