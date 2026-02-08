@@ -28,7 +28,11 @@ results_map = {}
 try:
     results_df = pd.read_csv(RESULTS_CSV_URL)
     results_df["Security Name"] = results_df["Security Name"].str.upper().str.strip()
-    results_df["Result Date"] = pd.to_datetime(results_df["Result Date"], errors="coerce")
+    results_df["Result Date"] = pd.to_datetime(
+    results_df["Result Date"],
+    format="%d-%b-%y",
+    errors="coerce"
+)
     results_map = dict(zip(results_df["Security Name"], results_df["Result Date"]))
 except:
     pass
@@ -139,3 +143,4 @@ if medium_conviction:
 
 if not high_conviction and not medium_conviction:
     send_telegram("ℹ️ EOD Scan completed. No high-probability setups today.")
+
