@@ -4,6 +4,8 @@ import ta
 import requests
 import time
 import os
+import numpy as np
+from scipy.stats import linregress
 from datetime import datetime
 
 # ================= CONFIG =================
@@ -15,10 +17,37 @@ RESULTS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRPYwOAHp2nWb917n
 # ================= TELEGRAM =================
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram secrets missing")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+
+# ================= TRENDLINE FUNCTION =================
+def trendline_distance(series, kind="support", lookback=252, swings=5):
+    """
+    Returns % distance of current price from 1-year trendline
+    using last 4–5 major swing highs/lows
+    """
+    data = series.tail(lookback).reset_index(drop=True)
+
+    if kind == "support":
+        pivots = data[(data.shift(1) > data) & (data.shift(-1) > data)]
+    else:
+        pivots = data[(data.shift(1) < data) & (data.shift(-1) < data)]
+
+    pivots = pivots.tail(swings)
+
+    if len(pivots) < 3:
+        return None
+
+    x = np.array(pivots.index)
+    y = pivots.values
+
+    slope, intercept, *_ = linregress(x, y)
+
+    projected_price = slope * (len(data) - 1) + intercept
+    current_price = data.iloc[-1]
+
+    return ((current_price - projected_price) / current_price) * 100
 
 # ================= LOAD STOCK UNIVERSE =================
 with open("stocks.txt", "r") as f:
@@ -53,7 +82,7 @@ for i, stock in enumerate(STOCKS, 1):
         close = df["Close"]
         volume = df["Volume"]
 
-        # Indicators
+        # ===== Indicators =====
         ema50 = close.ewm(span=50).mean()
         ema200 = close.ewm(span=200).mean()
         vwap = (volume * (high + low + close) / 3).cumsum() / volume.cumsum()
@@ -66,30 +95,26 @@ for i, stock in enumerate(STOCKS, 1):
         last_high = high.iloc[-1]
         last_low = low.iloc[-1]
 
-        # Metrics
+        # ===== Metrics =====
         vol_spike = ((volume.iloc[-1] - vol_avg.iloc[-1]) / vol_avg.iloc[-1]) * 100
         ema50_dist = ((last_close - ema50.iloc[-1]) / ema50.iloc[-1]) * 100
         ema200_dist = ((last_close - ema200.iloc[-1]) / ema200.iloc[-1]) * 100
         vwap_dist = ((last_close - vwap.iloc[-1]) / vwap.iloc[-1]) * 100
         atr_pct = (atr.iloc[-1] / last_close) * 100
 
-        # Candle strength
+        # ===== Candle Strength =====
         body = abs(last_close - last_open)
         candle_range = last_high - last_low
         body_ratio = body / candle_range if candle_range else 0
 
-        # ===== Support & Resistance (20-day swing) =====
-        lookback = 20
-        recent_close = close.tail(lookback)
-        support_price = recent_close.min()
-        resistance_price = recent_close.max()
-        support_pct = ((last_close - support_price) / last_close) * 100
-        resistance_pct = ((resistance_price - last_close) / last_close) * 100
+        # ===== Trendlines (1Y, 4–5 swings) =====
+        support_line_pct = trendline_distance(close, kind="support", swings=5)
+        resistance_line_pct = trendline_distance(close, kind="resistance", swings=5)
 
-        # Direction
+        # ===== Direction =====
         direction = "🟢📈" if last_close > ema200.iloc[-1] else "🔴📉"
 
-        # Score (internal ranking only)
+        # ===== Score (internal ranking only) =====
         score = (
             min(vol_spike, 150)
             + (abs(ema200_dist) < 1) * 40
@@ -106,14 +131,20 @@ for i, stock in enumerate(STOCKS, 1):
         except:
             pass
 
+        # ===== MESSAGE =====
         msg = (
             f"{direction} {symbol} | {company}\n"
             f"• Volume Spike: {vol_spike:.0f}%\n"
             f"• EMA200: {ema200_dist:.2f}% | EMA50: {ema50_dist:.2f}%\n"
             f"• VWAP: {vwap_dist:.2f}% | ATR: {atr_pct:.2f}%\n"
-            f"• MACD: {'Bullish' if macd_diff.iloc[-1] > 0 else 'Bearish'}\n"
-            f"• Resistance is {resistance_pct:.1f}% up and support is {support_pct:.1f}% down of current price"
+            f"• MACD: {'Bullish' if macd_diff.iloc[-1] > 0 else 'Bearish'}"
         )
+
+        if support_line_pct is not None and resistance_line_pct is not None:
+            msg += (
+                f"\n• Resistance line is {abs(resistance_line_pct):.1f}% "
+                f"and support line is {abs(support_line_pct):.1f}% from current price"
+            )
 
         if symbol in results_map and pd.notna(results_map[symbol]):
             msg += f"\n• Result Date: {results_map[symbol].strftime('%d %B %Y')}"
