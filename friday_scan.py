@@ -17,6 +17,26 @@ def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
+def send_long_message(text, chunk_size=3500):
+    for i in range(0, len(text), chunk_size):
+        send_telegram(text[i:i+chunk_size])
+
+# ================= SAFE SHORT NAME =================
+def get_short_name(ticker, symbol):
+    try:
+        name = ticker.fast_info.get("shortName")
+        if name:
+            return name
+    except:
+        pass
+    try:
+        name = ticker.info.get("shortName")
+        if name:
+            return name
+    except:
+        pass
+    return symbol
+
 # ================= LOAD STOCK UNIVERSE =================
 with open("stocks.txt") as f:
     stocks = [x.strip().upper() + ".NS" for x in f if x.strip()]
@@ -33,13 +53,11 @@ try:
 except:
     pass
 
-# ================= SUPPORT / RESISTANCE (1 YEAR, SWINGS) =================
+# ================= SUPPORT / RESISTANCE (1 YEAR, MAJOR SWINGS) =================
 def support_resistance(close, lookback=252):
     data = close.tail(lookback)
-    highs = data.nlargest(5)
-    lows = data.nsmallest(5)
-    resistance = highs.mean()
-    support = lows.mean()
+    resistance = data.nlargest(5).mean()
+    support = data.nsmallest(5).mean()
     return support, resistance
 
 # ================= MAIN SCAN =================
@@ -48,8 +66,8 @@ today = datetime.today().date()
 
 for i, stock in enumerate(stocks, 1):
     try:
-        t = yf.Ticker(stock)
-        df = t.history(period="1y")
+        ticker = yf.Ticker(stock)
+        df = ticker.history(period="1y")
 
         if df.empty or len(df) < 200:
             continue
@@ -70,15 +88,22 @@ for i, stock in enumerate(stocks, 1):
         vwap = (volume * (high + low + close) / 3).cumsum() / volume.cumsum()
         vwap_pct = ((last_close - vwap.iloc[-1]) / vwap.iloc[-1]) * 100
 
-        atr = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range().iloc[-1]
+        atr = ta.volatility.AverageTrueRange(
+            high, low, close, 14
+        ).average_true_range().iloc[-1]
         atr_pct = (atr / last_close) * 100
 
-        macd = ta.trend.MACD(close).macd_diff()
-        macd_signal = "Bullish" if macd.iloc[-1] > 0 and macd.iloc[-2] < 0 else \
-                      "Bearish" if macd.iloc[-1] < 0 and macd.iloc[-2] > 0 else "Neutral"
+        macd_diff = ta.trend.MACD(close).macd_diff()
+        macd_signal = (
+            "Bullish" if macd_diff.iloc[-1] > 0 and macd_diff.iloc[-2] < 0 else
+            "Bearish" if macd_diff.iloc[-1] < 0 and macd_diff.iloc[-2] > 0 else
+            "Neutral"
+        )
 
         vol_avg = volume.rolling(20).mean().iloc[-1]
-        vol_spike = ((volume.iloc[-1] - vol_avg) / vol_avg) * 100 if vol_avg else 0
+        vol_spike = 0
+        if vol_avg and vol_avg > 0:
+            vol_spike = ((volume.iloc[-1] - vol_avg) / vol_avg) * 100
 
         support, resistance = support_resistance(close)
         support_pct = ((support - last_close) / last_close) * 100
@@ -93,17 +118,17 @@ for i, stock in enumerate(stocks, 1):
         )
 
         direction = "🟢📈" if last_close > ema200 else "🔴📉"
-
         symbol = stock.replace(".NS", "")
-        name = t.info.get("shortName", "")
+        short_name = get_short_name(ticker, symbol)
 
         msg = (
-            f"{direction} {symbol} | {name}\n"
+            f"{direction} {symbol} | {short_name}\n"
             f"• Volume Spike: {vol_spike:.0f}%\n"
             f"• EMA200: {ema200_pct:.2f}% | EMA50: {ema50_pct:.2f}%\n"
             f"• VWAP: {vwap_pct:.2f}% | ATR: {atr_pct:.2f}%\n"
             f"• MACD: {macd_signal}\n"
-            f"• Resistance is {resistance_pct:.1f}% up and support is {abs(support_pct):.1f}% down of current price"
+            f"• Resistance is {resistance_pct:.1f}% up "
+            f"and support is {abs(support_pct):.1f}% down of current price"
         )
 
         if symbol in results_map and pd.notna(results_map[symbol]):
@@ -120,9 +145,9 @@ for i, stock in enumerate(stocks, 1):
 # ================= SEND TELEGRAM =================
 candidates.sort(reverse=True)
 
-final_msg = "🟢 TOP 20 EOD SETUPS\n\n"
-for _, m in candidates[:20]:
+final_msg = "🟢 TOP 15 EOD SETUPS\n\n"
+for _, m in candidates[:15]:
     final_msg += m + "\n\n"
 
-send_telegram(final_msg)
+send_long_message(final_msg)
 send_telegram("✅ EOD Scan completed successfully")
