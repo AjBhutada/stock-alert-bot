@@ -42,18 +42,75 @@ except:
 delivery_map = {}
 
 def load_delivery(trading_date):
+    """
+    Try 3 sources in order of reliability.
+    Running at 8 PM IST gives all sources plenty of time to publish
+    (NSE delivery data is usually ready by 6 PM IST).
+    """
     global delivery_map
-    date_str = trading_date.strftime("%Y%m%d")
-    url = f"https://archives.nseindia.com/products/content/sec_bhavdata_full_{date_str}.csv"
+    dd   = trading_date.strftime("%d")
+    mm   = trading_date.strftime("%m")
+    yyyy = trading_date.strftime("%Y")
+    date_str = f"{yyyy}{mm}{dd}"
+
+    # SOURCE 1: nsearchives (new domain, most reliable)
+    url1 = f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{date_str}.csv"
     try:
-        ddf = pd.read_csv(url)
-        ddf["SYMBOL"]    = ddf["SYMBOL"].str.strip().str.upper()
-        ddf              = ddf[ddf["TOTTRDQTY"] > 0].copy()
-        ddf["DELIV_PCT"] = ddf["DELIV_QTY"] / ddf["TOTTRDQTY"] * 100
-        delivery_map     = dict(zip(ddf["SYMBOL"], ddf["DELIV_PCT"]))
-        print(f"[delivery] Loaded {len(delivery_map)} records")
+        resp = requests.get(url1, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            from io import StringIO
+            ddf = pd.read_csv(StringIO(resp.text))
+            ddf.columns = ddf.columns.str.strip().str.upper()
+            ddf["SYMBOL"] = ddf["SYMBOL"].str.strip().str.upper()
+            qty_col   = next((c for c in ddf.columns if "TOTTRDQTY" in c or "TRADED_QTY" in c), None)
+            deliv_col = next((c for c in ddf.columns if "DELIV_QTY" in c or "DELIVERABLE" in c), None)
+            if qty_col and deliv_col:
+                ddf = ddf[ddf[qty_col] > 0].copy()
+                ddf["DELIV_PCT"] = ddf[deliv_col] / ddf[qty_col] * 100
+                delivery_map = dict(zip(ddf["SYMBOL"], ddf["DELIV_PCT"]))
+                print(f"[delivery] Source 1 OK: {len(delivery_map)} records")
+                return
     except Exception as e:
-        print(f"[delivery] Not available: {e}")
+        print(f"[delivery] Source 1 failed: {e}")
+
+    # SOURCE 2: old archives domain (fallback)
+    url2 = f"https://archives.nseindia.com/products/content/sec_bhavdata_full_{date_str}.csv"
+    try:
+        resp = requests.get(url2, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            from io import StringIO
+            ddf = pd.read_csv(StringIO(resp.text))
+            ddf["SYMBOL"]    = ddf["SYMBOL"].str.strip().str.upper()
+            ddf              = ddf[ddf["TOTTRDQTY"] > 0].copy()
+            ddf["DELIV_PCT"] = ddf["DELIV_QTY"] / ddf["TOTTRDQTY"] * 100
+            delivery_map     = dict(zip(ddf["SYMBOL"], ddf["DELIV_PCT"]))
+            print(f"[delivery] Source 2 OK: {len(delivery_map)} records")
+            return
+    except Exception as e:
+        print(f"[delivery] Source 2 failed: {e}")
+
+    # SOURCE 3: nse python package (handles cookies/session automatically)
+    try:
+        from nse import NSE
+        nse_obj  = NSE(download_folder="/tmp")
+        dlv_file = nse_obj.deliveryBhavcopy(date=trading_date)
+        nse_obj.exit()
+        if dlv_file and dlv_file.exists():
+            ddf = pd.read_csv(dlv_file)
+            ddf.columns = ddf.columns.str.strip().str.upper()
+            ddf["SYMBOL"] = ddf["SYMBOL"].str.strip().str.upper()
+            qty_col   = next((c for c in ddf.columns if "TRADED" in c or "TOTTRD" in c), None)
+            deliv_col = next((c for c in ddf.columns if "DELIV" in c), None)
+            if qty_col and deliv_col:
+                ddf = ddf[ddf[qty_col] > 0].copy()
+                ddf["DELIV_PCT"] = ddf[deliv_col] / ddf[qty_col] * 100
+                delivery_map = dict(zip(ddf["SYMBOL"], ddf["DELIV_PCT"]))
+                print(f"[delivery] Source 3 OK (nse pkg): {len(delivery_map)} records")
+                return
+    except Exception as e:
+        print(f"[delivery] Source 3 failed: {e}")
+
+    print(f"[delivery] All 3 sources failed for {date_str} — continuing without delivery data")
 
 # ================= LOG FILE =================
 LOG_FILE = "alert_log.csv"
