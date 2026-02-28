@@ -4,3 +4,4 @@ ta
 requests
 numpy
 scipy
+nse
