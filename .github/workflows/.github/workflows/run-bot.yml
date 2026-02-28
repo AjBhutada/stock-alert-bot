@@ -2,7 +2,7 @@ name: Daily Stock Scan
 
 on:
   schedule:
-    - cron: '30 11 * * *'   # 5:00 PM IST
+    - cron: '30 11 * * 1-5'   # 5:00 PM IST, Monday to Friday only
   workflow_dispatch:
 
 jobs:
@@ -22,5 +22,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run scanner
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           python friday_scan.py
